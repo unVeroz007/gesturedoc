@@ -1,23 +1,14 @@
 import cv2
 import mediapipe as mp
 
-# 1. Tambahkan import eksplisit ini di bagian paling atas (di bawah import mediapipe)
-import mediapipe.python.solutions.hands as mp_hands_module
-import mediapipe.python.solutions.pose as mp_pose_module
-import mediapipe.python.solutions.face_mesh as mp_face_mesh_module
-import mediapipe.python.solutions.drawing_utils as mp_drawing_module
-import mediapipe.python.solutions.drawing_styles as mp_drawing_styles_module
-
 class HandTracker:
     def __init__(self):
-        # 2. Ubah pemanggilannya menggunakan modul yang baru diimpor di atas
-        self.mp_hands       = mp_hands_module
-        self.mp_pose        = mp_pose_module
-        self.mp_face_mesh   = mp_face_mesh_module
-        self.mp_draw        = mp_drawing_module
-        self.mp_draw_styles = mp_drawing_styles_module
+        self.mp_hands       = mp.solutions.hands
+        self.mp_pose        = mp.solutions.pose
+        self.mp_face_mesh   = mp.solutions.face_mesh
+        self.mp_draw        = mp.solutions.drawing_utils
+        self.mp_draw_styles = mp.solutions.drawing_styles
 
-        # 3. Bagian bawah ini tetap sama persis seperti aslimu
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
@@ -62,29 +53,6 @@ class HandTracker:
                 cv2.line(frame, (ax,ay), (bx,by), (60,80,200), 2)
             for i in range(11, 33):
                 cv2.circle(frame, (int(lm[i].x*w), int(lm[i].y*h)), 3, (80,120,255), -1)
-        return frame
-
-    def draw_pose_scaled(self, frame, scale_x, scale_y):
-        """Gambar skeleton pose dengan scaling ke ukuran display"""
-        if not self.pose_results or not self.pose_results.pose_landmarks:
-            return frame
-        lm = self.pose_results.pose_landmarks.landmark
-        h, w, _ = frame.shape
-
-        body_connections = [
-            (11,12),(11,13),(13,15),(12,14),(14,16),
-            (11,23),(12,24),(23,24),(23,25),(25,27),(24,26),(26,28),
-        ]
-        for a, b in body_connections:
-            ax = int(lm[a].x * RESIZE_W * scale_x)
-            ay = int(lm[a].y * RESIZE_H * scale_y)
-            bx = int(lm[b].x * RESIZE_W * scale_x)
-            by = int(lm[b].y * RESIZE_H * scale_y)
-            cv2.line(frame, (ax,ay), (bx,by), (60,80,200), 2)
-        for i in range(11, 33):
-            x = int(lm[i].x * RESIZE_W * scale_x)
-            y = int(lm[i].y * RESIZE_H * scale_y)
-            cv2.circle(frame, (x,y), 3, (80,120,255), -1)
         return frame
 
     def get_fingertip(self, frame):
