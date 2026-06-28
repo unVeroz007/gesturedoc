@@ -13,18 +13,21 @@ class HandTracker:
             static_image_mode=False,
             max_num_hands=1,
             min_detection_confidence=0.7,
-            min_tracking_confidence=0.7
+            min_tracking_confidence=0.7,
+            model_complexity=0      # ← tambah ini, lebih ringan
         )
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=1,
+            model_complexity=0,     # ← ganti dari 1 ke 0
             min_detection_confidence=0.6,
-            min_tracking_confidence=0.6
+            min_tracking_confidence=0.6,
+            enable_segmentation=False,
+            smooth_segmentation=False
         )
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            refine_landmarks=True,
+            refine_landmarks=False,  # ← ganti True ke False, hemat resource
             min_detection_confidence=0.6,
             min_tracking_confidence=0.6
         )
