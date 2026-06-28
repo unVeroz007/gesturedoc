@@ -5,7 +5,12 @@ from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+api_key = os.getenv("GROQ_API_KEY")
+if not api_key:
+    raise ValueError("GROQ_API_KEY tidak ditemukan! Tambahkan di Streamlit Secrets atau file .env")
+
+client = Groq(api_key=api_key)
 
 def get_health_info(zone_name: str) -> str:
     prompt = f"""Kamu adalah asisten kesehatan edukatif berbahasa Indonesia.
