@@ -13,6 +13,9 @@ from body_zones import ZONE_COLORS, ZONE_LABELS, get_nearest_zone
 from ai_engine import get_health_info
 from streamlit_autorefresh import st_autorefresh
 import requests
+os.environ["MEDIAPIPE_DISABLE_GPU"] = "1"
+os.environ["MESA_GL_VERSION_OVERRIDE"] = "3.3"
+os.environ["EGL_PLATFORM"] = "surfaceless"
 
 # ── Konfigurasi ───────────────────────────────────────────
 HOVER_NEEDED    = 20
@@ -82,7 +85,7 @@ def fetch_ai(zone_name):
 # ── Video Processor ───────────────────────────────────────
 class GestureDocProcessor(VideoProcessorBase):
     def __init__(self):
-        self.tracker        = HandTracker()
+        self.tracker        = None        
         self.hover_zone     = None
         self.hover_count    = 0
         self.current_zone   = None
