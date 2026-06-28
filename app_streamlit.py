@@ -22,24 +22,14 @@ RESIZE_H        = 360
 RESULT_FILE     = "gesturedoc_result.json"   # ← simpan hasil AI ke file
 
 
-@st.cache_data(ttl=3600)
-def get_ice_servers():
-    try:
-        api_key = os.getenv("METERED_API_KEY", "")
-        if api_key:
-            r = requests.get(
-                f"https://gesturedoc.metered.live/api/v1/turn/credentials?apiKey={api_key}"
-            )
-            return r.json()
-    except:
-        pass
-    # Fallback STUN only
-    return [
-        {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
+RTC_CONFIG = RTCConfiguration({
+    "iceServers": [
+        {"urls": "stun:stun.l.google.com:19302"},
+        {"urls": "stun:stun1.l.google.com:19302"},
+        {"urls": "stun:stun2.l.google.com:19302"},
+        {"urls": "stun:stun3.l.google.com:19302"},
     ]
-
-RTC_CONFIG = RTCConfiguration({"iceServers": get_ice_servers()})
+})
 
 ZONE_LABELS_CV = {
     "Kepala": "Kepala", "Mata Kiri": "Mata Kiri", "Mata Kanan": "Mata Kanan",
