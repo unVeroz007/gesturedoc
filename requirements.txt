@@ -1,4 +1,6 @@
-gradio
+streamlit
+streamlit-webrtc
+streamlit-autorefresh
 opencv-python-headless
 mediapipe
 groq
