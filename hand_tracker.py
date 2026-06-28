@@ -1,19 +1,23 @@
-# hand_tracker.py - Web Version (tanpa TTS, tanpa window)
-RESIZE_W = 480
-RESIZE_H = 360
-
 import cv2
 import mediapipe as mp
-import math
+
+# 1. Tambahkan import eksplisit ini di bagian paling atas (di bawah import mediapipe)
+import mediapipe.python.solutions.hands as mp_hands_module
+import mediapipe.python.solutions.pose as mp_pose_module
+import mediapipe.python.solutions.face_mesh as mp_face_mesh_module
+import mediapipe.python.solutions.drawing_utils as mp_drawing_module
+import mediapipe.python.solutions.drawing_styles as mp_drawing_styles_module
 
 class HandTracker:
     def __init__(self):
-        self.mp_hands     = mp.solutions.hands
-        self.mp_pose      = mp.solutions.pose
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.mp_draw      = mp.solutions.drawing_utils
-        self.mp_draw_styles = mp.solutions.drawing_styles
+        # 2. Ubah pemanggilannya menggunakan modul yang baru diimpor di atas
+        self.mp_hands       = mp_hands_module
+        self.mp_pose        = mp_pose_module
+        self.mp_face_mesh   = mp_face_mesh_module
+        self.mp_draw        = mp_drawing_module
+        self.mp_draw_styles = mp_drawing_styles_module
 
+        # 3. Bagian bawah ini tetap sama persis seperti aslimu
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
