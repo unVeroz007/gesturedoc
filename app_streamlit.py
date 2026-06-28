@@ -12,6 +12,7 @@ from hand_tracker import HandTracker
 from body_zones import ZONE_COLORS, ZONE_LABELS, get_nearest_zone
 from ai_engine import get_health_info
 from streamlit_autorefresh import st_autorefresh
+import requests
 
 # ── Konfigurasi ───────────────────────────────────────────
 HOVER_NEEDED    = 20
@@ -20,28 +21,25 @@ RESIZE_W        = 480
 RESIZE_H        = 360
 RESULT_FILE     = "gesturedoc_result.json"   # ← simpan hasil AI ke file
 
-RTC_CONFIG = RTCConfiguration({
-    "iceServers": [
+
+@st.cache_data(ttl=3600)
+def get_ice_servers():
+    try:
+        api_key = os.getenv("METERED_API_KEY", "")
+        if api_key:
+            r = requests.get(
+                f"https://gesturedoc.metered.live/api/v1/turn/credentials?apiKey={api_key}"
+            )
+            return r.json()
+    except:
+        pass
+    # Fallback STUN only
+    return [
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["stun:stun1.l.google.com:19302"]},
-        {"urls": ["stun:stun2.l.google.com:19302"]},
-        {
-            "urls": ["turn:openrelay.metered.ca:80"],
-            "username": "openrelayproject",
-            "credential": "openrelayproject",
-        },
-        {
-            "urls": ["turn:openrelay.metered.ca:443"],
-            "username": "openrelayproject",
-            "credential": "openrelayproject",
-        },
-        {
-            "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
-            "username": "openrelayproject",
-            "credential": "openrelayproject",
-        },
     ]
-})
+
+RTC_CONFIG = RTCConfiguration({"iceServers": get_ice_servers()})
 
 ZONE_LABELS_CV = {
     "Kepala": "Kepala", "Mata Kiri": "Mata Kiri", "Mata Kanan": "Mata Kanan",
