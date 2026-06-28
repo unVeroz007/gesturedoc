@@ -3,31 +3,30 @@ import mediapipe as mp
 
 class HandTracker:
     def __init__(self):
-        self.mp_hands       = mp.solutions.hands
-        self.mp_pose        = mp.solutions.pose
-        self.mp_face_mesh   = mp.solutions.face_mesh
-        self.mp_draw        = mp.solutions.drawing_utils
+        # Gunakan cara standar yang dijamin stabil oleh Google
+        self.mp_hands = mp.solutions.hands
+        self.mp_pose = mp.solutions.pose
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.mp_draw = mp.solutions.drawing_utils
         self.mp_draw_styles = mp.solutions.drawing_styles
 
+        # Inisialisasi model
         self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
             min_detection_confidence=0.7,
-            min_tracking_confidence=0.7,
-            model_complexity=0      # ← tambah ini, lebih ringan
+            min_tracking_confidence=0.7
         )
         self.pose = self.mp_pose.Pose(
             static_image_mode=False,
-            model_complexity=0,     # ← ganti dari 1 ke 0
+            model_complexity=1,
             min_detection_confidence=0.6,
-            min_tracking_confidence=0.6,
-            enable_segmentation=False,
-            smooth_segmentation=False
+            min_tracking_confidence=0.6
         )
         self.face_mesh = self.mp_face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            refine_landmarks=False,  # ← ganti True ke False, hemat resource
+            refine_landmarks=True,
             min_detection_confidence=0.6,
             min_tracking_confidence=0.6
         )
@@ -41,7 +40,6 @@ class HandTracker:
         self.pose_results = self.pose.process(rgb)
         self.face_results = self.face_mesh.process(rgb)
         return frame
-
     def draw_pose(self, frame):
         if self.pose_results and self.pose_results.pose_landmarks:
             lm = self.pose_results.pose_landmarks.landmark
