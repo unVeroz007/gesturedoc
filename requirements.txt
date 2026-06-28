@@ -2,7 +2,7 @@ streamlit
 streamlit-webrtc
 streamlit-autorefresh
 opencv-python-headless
-mediapipe
+mediapipe==0.10.9
 groq
 python-dotenv
 numpy
