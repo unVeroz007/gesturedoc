@@ -1,0 +1,5 @@
+# GestureDoc Web — requirements.txt
+# MediaPipe berjalan di browser (JS/CDN) — Python hanya butuh ini:
+streamlit>=1.28.0
+groq>=0.4.0
+python-dotenv>=1.0.0
