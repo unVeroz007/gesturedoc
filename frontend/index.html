@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GestureDoc Camera</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0f0f1a;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    overflow: hidden;
+  }
+
+  #wrapper { position: relative; width: 100%; }
+
+  video  { display: none; }
+
+  canvas {
+    width: 100%;
+    display: block;
+    border-radius: 6px;
+  }
+
+  /* Loading state — tampil sebelum kamera aktif */
+  #loading {
+    color: #64dcff;
+    font-size: 13px;
+    padding: 24px 16px;
+    text-align: center;
+    min-height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+  /* Error state */
+  #error-msg {
+    display: none;
+    color: #ff7070;
+    background: rgba(255,100,100,0.07);
+    border: 1px solid rgba(255,100,100,0.25);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin: 10px;
+    font-size: 12px;
+    line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <div id="loading">⏳ Memuat komponen GestureDoc...</div>
+  <div id="error-msg"></div>
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     MediaPipe CDN — harus dimuat sebelum script utama
+     (mediapipe/hands, pose, face_mesh mengekspos class global)
+     ══════════════════════════════════════════════════════════════ -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"   crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+
+<script>
+// ══════════════════════════════════════════════════════════════════
+// 1. STREAMLIT COMPONENT PROTOCOL
+//    - Kirim componentReady → Streamlit balas dengan streamlit:render
+//    - Setelah render diterima, baru init kamera
+//    - Zona terdeteksi → sendToStreamlit({zone, ts})
+// ══════════════════════════════════════════════════════════════════
+let _cameraStarted = false;
+
+function sendToStreamlit(value) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type:  "streamlit:setComponentValue",
+    value: value
+  }, "*");
+}
+
+function setFrameHeight(h) {
+  window.parent.postMessage({
+    isStreamlitMessage: true,
+    type:   "streamlit:setFrameHeight",
+    height: Math.round(h)
+  }, "*");
+}
+
+// Dengarkan render event dari Streamlit
+window.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "streamlit:render" && !_cameraStarted) {
+    _cameraStarted = true;
+    initCamera();
+  }
+});
+
+// Kirim sinyal siap ke Streamlit
+window.parent.postMessage({
+  isStreamlitMessage: true,
+  type:       "streamlit:componentReady",
+  apiVersion: 1
+}, "*");
+
+// Fallback: jika dibuka langsung di browser (testing tanpa Streamlit)
+setTimeout(() => {
+  if (!_cameraStarted) { _cameraStarted = true; initCamera(); }
+}, 1500);
+
+
+// ══════════════════════════════════════════════════════════════════
+// 2. KONSTANTA & WARNA ZONA
+// ══════════════════════════════════════════════════════════════════
+const HOVER_NEEDED = 20;      // frame untuk trigger zona (~1 detik)
+const COOLDOWN_MS  = 3000;    // ms sebelum kirim zona yang sama lagi
+
+// RGB color per zona (array [r, g, b])
+const COLORS = {
+  "Kepala":              [100, 220, 255],
+  "Mata Kiri":           [ 80, 200, 120],
+  "Mata Kanan":          [ 80, 200, 120],
+  "Hidung":              [200, 180, 100],
+  "Mulut":               [220, 100, 150],
+  "Telinga Kiri":        [150, 100, 220],
+  "Telinga Kanan":       [150, 100, 220],
+  "Dagu":                [180, 180, 100],
+  "Leher":               [100, 180, 255],
+  "Dada & Paru-paru":    [ 80, 120, 255],
+  "Jantung":             [255, 100, 100],
+  "Perut":               [255, 180,  50],
+  "Pinggul":             [200, 150,  80],
+  "Bahu Kiri":           [100, 220, 200],
+  "Bahu Kanan":          [100, 220, 200],
+  "Siku Kiri":           [180, 220, 100],
+  "Siku Kanan":          [180, 220, 100],
+  "Pergelangan Tangan":  [220, 200,  80],
+  "Lutut":               [180, 100, 220],
+  "Pergelangan Kaki":    [100, 200, 180],
+};
+
+// Shorthand untuk CSS color strings
+const rgb  = c => `rgb(${c[0]},${c[1]},${c[2]})`;
+const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+
+// ══════════════════════════════════════════════════════════════════
+// 3. STATE VARIABLES
+// ══════════════════════════════════════════════════════════════════
+let handResults = null;   // hasil MediaPipe Hands
+let poseResults = null;   // hasil MediaPipe Pose
+let faceResults = null;   // hasil MediaPipe FaceMesh
+
+let zones      = {};      // { zoneName: {x, y, r} } — pixel coordinates
+let fingertip  = null;    // { x, y } — ujung jari telunjuk
+
+let hoverZone  = null;    // zona yang sedang di-hover
+let hoverCount = 0;       // berapa frame sudah hover
+
+let currentZone = null;   // zona yang terakhir dikirim ke Python
+let lastSentTs  = 0;      // timestamp terakhir dikirim
+
+let frameCount = 0;
+let busy       = false;   // cegah overlap frame processing
+
+// DOM elements
+const loadingEl = document.getElementById("loading");
+const errorEl   = document.getElementById("error-msg");
+const video     = document.getElementById("video");
+const canvas    = document.getElementById("canvas");
+const ctx       = canvas.getContext("2d");
+
+
+// ══════════════════════════════════════════════════════════════════
+// 4. INISIALISASI MEDIAPIPE
+//    Hands: setiap frame (real-time fingertip tracking)
+//    Pose + FaceMesh: bergantian setiap frame lainnya (zone update)
+// ══════════════════════════════════════════════════════════════════
+const mpHands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
+mpHands.setOptions({
+  maxNumHands:            1,
+  modelComplexity:        1,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence:  0.5,
+});
+mpHands.onResults(r => { handResults = r; });
+
+const mpPose = new Pose({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
+});
+mpPose.setOptions({
+  modelComplexity:        1,
+  smoothLandmarks:        true,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence:  0.5,
+});
+mpPose.onResults(r => { poseResults = r; });
+
+const mpFace = new FaceMesh({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+});
+mpFace.setOptions({
+  maxNumFaces:            1,
+  refineLandmarks:        false,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence:  0.5,
+});
+mpFace.onResults(r => { faceResults = r; });
+
+
+// ══════════════════════════════════════════════════════════════════
+// 5. KOMPUTASI ZONA
+//    Semua koordinat dalam pixel relatif terhadap canvas (W x H)
+//    Pose → zona badan (proporsional terhadap lebar bahu)
+//    FaceMesh → zona wajah (proporsional terhadap lebar wajah)
+// ══════════════════════════════════════════════════════════════════
+function computeZones(W, H) {
+  const z = {};
+
+  // ── Zona dari Pose Landmarks ──────────────────────────────
+  if (poseResults && poseResults.poseLandmarks) {
+    const lm = poseResults.poseLandmarks;
+
+    // Helper: konversi normalized → pixel (x dibalik untuk tampilan cermin)
+    const p = i => lm[i] ? { x: (1 - lm[i].x) * W, y: lm[i].y * H } : null;
+
+    const ls = p(11), rs = p(12);   // bahu kiri & kanan
+    const lh = p(23), rh = p(24);   // pinggul kiri & kanan
+    const le = p(13), re = p(14);   // siku kiri & kanan
+    const lw = p(15), rw = p(16);   // pergelangan kiri & kanan
+    const lk = p(25), rk = p(26);   // lutut kiri & kanan
+    const la = p(27), ra = p(28);   // pergelangan kaki kiri & kanan
+
+    if (ls && rs) {
+      const sw = Math.abs(rs.x - ls.x);   // shoulder width px
+      const mx = (ls.x + rs.x) / 2;       // mid-shoulder x
+      const my = (ls.y + rs.y) / 2;       // mid-shoulder y
+
+      // Zona proporsional terhadap lebar bahu
+      z["Leher"]            = { x: mx,           y: my - sw*0.12, r: sw*0.09 };
+      z["Dada & Paru-paru"] = { x: mx,           y: my + sw*0.18, r: sw*0.22 };
+      z["Jantung"]          = { x: mx - sw*0.12, y: my + sw*0.13, r: sw*0.10 };
+      z["Bahu Kiri"]        = { x: ls.x,         y: ls.y,         r: sw*0.10 };
+      z["Bahu Kanan"]       = { x: rs.x,         y: rs.y,         r: sw*0.10 };
+
+      if (lh && rh) {
+        const hx = (lh.x + rh.x) / 2;
+        const hy = (lh.y + rh.y) / 2;
+        z["Perut"]   = { x: mx, y: (my + hy) / 2, r: sw * 0.20 };
+        z["Pinggul"] = { x: hx, y: hy,             r: sw * 0.18 };
+      }
+    }
+
+    if (le) z["Siku Kiri"]  = { x: le.x, y: le.y, r: 22 };
+    if (re) z["Siku Kanan"] = { x: re.x, y: re.y, r: 22 };
+
+    if (lw && rw) {
+      z["Pergelangan Tangan"] = {
+        x: (lw.x + rw.x) / 2,
+        y: (lw.y + rw.y) / 2,
+        r: 18
+      };
+    }
+    if (lk && rk) {
+      z["Lutut"] = { x: (lk.x+rk.x)/2, y: (lk.y+rk.y)/2, r: 22 };
+    }
+    if (la && ra) {
+      z["Pergelangan Kaki"] = { x: (la.x+ra.x)/2, y: (la.y+ra.y)/2, r: 18 };
+    }
+  }
+
+  // ── Zona dari FaceMesh Landmarks ─────────────────────────
+  if (faceResults && faceResults.multiFaceLandmarks &&
+      faceResults.multiFaceLandmarks.length > 0) {
+    const lm = faceResults.multiFaceLandmarks[0];
+    const fx = i => (1 - lm[i].x) * W;  // x dibalik untuk cermin
+    const fy = i => lm[i].y * H;
+
+    // Lebar wajah berdasarkan landmark pipi kiri-kanan
+    const fw = Math.abs(fx(127) - fx(356)) || 120;
+    const rs = fw * 0.08;   // radius kecil untuk zona wajah spesifik
+
+    z["Kepala"]        = { x: fx(10),                y: fy(10) - fw*0.15,            r: fw*0.20 };
+    z["Mata Kiri"]     = { x: (fx(33)+fx(133))/2,    y: (fy(33)+fy(133))/2,          r: fw*0.07 };
+    z["Mata Kanan"]    = { x: (fx(362)+fx(263))/2,   y: (fy(362)+fy(263))/2,         r: fw*0.07 };
+    z["Hidung"]        = { x: fx(1),                  y: fy(1),                       r: rs      };
+    z["Mulut"]         = { x: (fx(61)+fx(291))/2,    y: fy(0) + (fy(17)-fy(0))*0.4, r: rs*1.2  };
+    z["Telinga Kiri"]  = { x: fx(234),                y: fy(234),                     r: rs      };
+    z["Telinga Kanan"] = { x: fx(454),                y: fy(454),                     r: rs      };
+    z["Dagu"]          = { x: fx(152),                y: fy(152),                     r: rs      };
+  }
+
+  return z;
+}
+
+// Zona terdekat = zona dengan radius terkecil yang mengandung fingertip
+// (sama dengan logika Python: zona paling spesifik yang menang pada overlap)
+function nearestZone(tip, zones) {
+  if (!tip) return null;
+  let bestName = null, bestR = Infinity;
+  for (const [name, z] of Object.entries(zones)) {
+    const dist = Math.hypot(tip.x - z.x, tip.y - z.y);
+    if (dist <= z.r && z.r < bestR) {
+      bestR    = z.r;
+      bestName = name;
+    }
+  }
+  return bestName;
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// 6. FUNGSI DRAWING
+// ══════════════════════════════════════════════════════════════════
+
+function drawHeader(W) {
+  ctx.fillStyle = "rgba(15,15,26,0.88)";
+  ctx.fillRect(0, 0, W, 36);
+  ctx.fillStyle = "#64dcff";
+  ctx.font = "bold 13px 'Segoe UI', sans-serif";
+  ctx.fillText("🩺 GestureDoc  |  Tunjuk bagian tubuhmu dengan jari telunjuk", 10, 23);
+}
+
+function drawFooter(W, H) {
+  ctx.fillStyle = "rgba(15,15,26,0.88)";
+  ctx.fillRect(0, H - 22, W, 22);
+  const label = currentZone ? `✅ Aktif: ${currentZone}` : "⏳ Belum ada zona aktif";
+  const c     = currentZone ? (COLORS[currentZone] || [120,120,140]) : [120,120,140];
+  ctx.fillStyle = rgb(c);
+  ctx.font = "11px 'Segoe UI', sans-serif";
+  ctx.fillText(label, 10, H - 7);
+}
+
+function drawSkeleton(W, H) {
+  if (!poseResults || !poseResults.poseLandmarks) return;
+  const lm = poseResults.poseLandmarks;
+
+  const SEGS = [
+    [11,12],[11,13],[13,15],[12,14],[14,16],
+    [11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]
+  ];
+
+  ctx.strokeStyle = "rgba(60,80,200,0.55)";
+  ctx.lineWidth   = 2;
+  for (const [a, b] of SEGS) {
+    if (!lm[a] || !lm[b]) continue;
+    ctx.beginPath();
+    ctx.moveTo(lm[a].x * W, lm[a].y * H);
+    ctx.lineTo(lm[b].x * W, lm[b].y * H);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "rgba(80,120,255,0.75)";
+  for (let i = 11; i < 33; i++) {
+    if (!lm[i]) continue;
+    ctx.beginPath();
+    ctx.arc(lm[i].x * W, lm[i].y * H, 3, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawZones() {
+  for (const [name, z] of Object.entries(zones)) {
+    const c       = COLORS[name] || [150, 150, 150];
+    const active  = (name === currentZone);
+    const hovered = (name === hoverZone);
+
+    if (active) {
+      // Lingkaran terisi transparan + garis tepi + label
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.r, 0, Math.PI*2);
+      ctx.fillStyle   = rgba(c, 0.25);
+      ctx.fill();
+      ctx.strokeStyle = rgb(c);
+      ctx.lineWidth   = 2.5;
+      ctx.stroke();
+
+      ctx.font = "bold 12px 'Segoe UI', sans-serif";
+      const tw = ctx.measureText(name).width;
+      ctx.fillStyle = rgb(c);
+      ctx.fillText(name, z.x - tw/2, z.y - z.r - 7);
+
+    } else if (hovered) {
+      // Hanya garis tepi + label kecil
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, z.r, 0, Math.PI*2);
+      ctx.strokeStyle = rgb(c);
+      ctx.lineWidth   = 1.8;
+      ctx.stroke();
+
+      ctx.font = "11px 'Segoe UI', sans-serif";
+      const tw = ctx.measureText(name).width;
+      ctx.fillStyle = rgb(c);
+      ctx.fillText(name, z.x - tw/2, z.y - z.r - 5);
+
+    } else {
+      // Hanya titik kecil (idle)
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, 4, 0, Math.PI*2);
+      ctx.fillStyle = rgb(c);
+      ctx.fill();
+    }
+  }
+}
+
+function drawFingertip() {
+  if (!fingertip) return;
+  const c = hoverZone ? (COLORS[hoverZone] || [80,255,160]) : [80,255,160];
+  const { x, y } = fingertip;
+
+  // Lingkaran utama
+  ctx.beginPath();
+  ctx.arc(x, y, 13, 0, Math.PI*2);
+  ctx.fillStyle = rgba(c, 0.92);
+  ctx.fill();
+
+  // Ring luar
+  ctx.beginPath();
+  ctx.arc(x, y, 17, 0, Math.PI*2);
+  ctx.strokeStyle = "rgba(230,230,230,0.8)";
+  ctx.lineWidth   = 2;
+  ctx.stroke();
+
+  // Crosshair
+  ctx.strokeStyle = "rgba(230,230,230,0.5)";
+  ctx.lineWidth   = 1;
+  ctx.beginPath();
+  ctx.moveTo(x-22, y); ctx.lineTo(x-14, y);
+  ctx.moveTo(x+14, y); ctx.lineTo(x+22, y);
+  ctx.moveTo(x, y-22); ctx.lineTo(x, y-14);
+  ctx.moveTo(x, y+14); ctx.lineTo(x, y+22);
+  ctx.stroke();
+}
+
+function drawHoverBar(W, H) {
+  if (!hoverZone || hoverCount <= 0) return;
+  const prog = Math.min(hoverCount / HOVER_NEEDED, 1.0);
+  const c    = COLORS[hoverZone] || [100, 220, 255];
+
+  const bx = 15, by = H - 56, bw = W - 30, bh = 8;
+
+  // Track (background)
+  ctx.fillStyle = "rgba(35,35,55,0.85)";
+  ctx.fillRect(bx, by, bw, bh);
+
+  // Fill (progress)
+  const fillW = Math.max(0, Math.round(bw * prog));
+  if (fillW > 0) {
+    ctx.fillStyle = rgb(c);
+    ctx.fillRect(bx, by, fillW, bh);
+  }
+
+  // Label
+  ctx.fillStyle = rgba(c, 0.95);
+  ctx.font      = "11px 'Segoe UI', sans-serif";
+  ctx.fillText(
+    `Mendeteksi: ${hoverZone}   ${Math.round(prog * 100)}%`,
+    bx, by - 5
+  );
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// 7. INISIALISASI KAMERA
+// ══════════════════════════════════════════════════════════════════
+function showError(html) {
+  loadingEl.style.display = "none";
+  errorEl.style.display   = "block";
+  errorEl.innerHTML       = html;
+  setFrameHeight(130);
+}
+
+async function initCamera() {
+  loadingEl.textContent = "📷 Meminta izin akses kamera...";
+
+  // Cek apakah API tersedia (butuh HTTPS)
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showError(
+      "<b>❌ getUserMedia tidak tersedia.</b><br>" +
+      "Pastikan akses via <b>HTTPS</b> (Streamlit Cloud sudah HTTPS ✓).<br>" +
+      "Jika lokal, akses lewat <code>localhost</code>, bukan IP."
+    );
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width:     { ideal: 640 },
+        height:    { ideal: 480 },
+        frameRate: { ideal: 30  },
+      },
+      audio: false,
+    });
+
+    video.srcObject = stream;
+
+    // Tunggu metadata video tersedia
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = reject;
+    });
+
+    // Pastikan video playing
+    try { await video.play(); } catch (_) {}
+
+    // Set resolusi internal canvas = resolusi video
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+
+    // Set tinggi iframe sesuai rasio canvas x lebar iframe
+    updateFrameHeight();
+    window.addEventListener("resize", updateFrameHeight);
+
+    loadingEl.style.display = "none";
+    requestAnimationFrame(mainLoop);
+
+  } catch (err) {
+    let msg = "<b>❌ Kamera tidak bisa diakses.</b><br>";
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      msg +=
+        "Browser menolak izin kamera.<br>" +
+        "Klik ikon 🔒 di address bar → <b>Izinkan Kamera</b> → <b>Refresh</b> halaman.";
+    } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      msg += "Tidak ada kamera yang terdeteksi di perangkat ini.";
+    } else {
+      msg += `Detail: ${err.name}: ${err.message}`;
+    }
+    showError(msg);
+  }
+}
+
+// Hitung tinggi frame berdasarkan rasio aspek canvas dan lebar iframe saat ini
+function updateFrameHeight() {
+  const iframeW  = window.innerWidth || canvas.width;
+  const ratio    = canvas.height / canvas.width;
+  const displayH = iframeW * ratio;
+  setFrameHeight(displayH + 20);   // +20 margin bawah
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// 8. MAIN LOOP — requestAnimationFrame
+//    Hands: setiap frame
+//    Pose:  setiap frame genap
+//    Face:  setiap frame ganjil
+// ══════════════════════════════════════════════════════════════════
+async function mainLoop() {
+  // Cegah overlap jika frame sebelumnya belum selesai
+  if (busy || video.readyState < 2) {
+    requestAnimationFrame(mainLoop);
+    return;
+  }
+
+  busy = true;
+  const W = canvas.width;
+  const H = canvas.height;
+  frameCount++;
+
+  try {
+    // ── MediaPipe Processing ────────────────────────────────
+    // Hands setiap frame (fingertip butuh real-time tracking)
+    await mpHands.send({ image: video });
+
+    // Pose & FaceMesh bergantian (zona berubah lambat, hemat CPU)
+    if (frameCount % 2 === 0) {
+      await mpPose.send({ image: video });
+    } else {
+      await mpFace.send({ image: video });
+    }
+
+    // ── Drawing ─────────────────────────────────────────────
+    // Gambar video dengan efek cermin (tampilan natural seperti selfie)
+    ctx.save();
+    ctx.translate(W, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, W, H);
+    ctx.restore();
+    drawHeader(W);
+    drawSkeleton(W, H);
+
+    // ── Zone & Fingertip Update ─────────────────────────────
+    zones     = computeZones(W, H);
+    fingertip = null;
+
+    if (handResults &&
+        handResults.multiHandLandmarks &&
+        handResults.multiHandLandmarks[0]) {
+      const lm  = handResults.multiHandLandmarks[0];
+      fingertip = { x: (1 - lm[8].x) * W, y: lm[8].y * H };  // lm[8] = ujung jari telunjuk (x dibalik)
+    }
+
+    drawZones();
+    drawFingertip();
+
+    // ── Hover Detection ─────────────────────────────────────
+    const detected = nearestZone(fingertip, zones);
+
+    if (detected) {
+      if (detected === hoverZone) {
+        hoverCount++;
+      } else {
+        hoverZone  = detected;
+        hoverCount = 1;
+      }
+
+      // Zona terpilih → kirim ke Streamlit Python
+      if (hoverCount >= HOVER_NEEDED) {
+        const now      = Date.now();
+        const sameZone = (detected === currentZone);
+        if (!sameZone || (now - lastSentTs) > COOLDOWN_MS) {
+          currentZone = detected;
+          lastSentTs  = now;
+          sendToStreamlit({ zone: detected, ts: now });
+        }
+        hoverCount = 0;   // reset setelah trigger
+      }
+
+    } else {
+      hoverZone  = null;
+      hoverCount = 0;
+    }
+
+    drawHoverBar(W, H);
+    drawFooter(W, H);
+
+  } catch (err) {
+    console.error("[GestureDoc] Frame error:", err);
+  } finally {
+    busy = false;
+    requestAnimationFrame(mainLoop);
+  }
+}
+</script>
+
+</body>
+</html>
