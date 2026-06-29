@@ -1,6 +1,0 @@
-.env
-*.json
-__pycache__/
-*.pyc
-.venv/
-gesturedoc_result.json
